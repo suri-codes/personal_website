@@ -1,0 +1,4 @@
+- place to get the um resume or something
+- blog ideas
+    - rust term to term thingy?
+    - auth 0 with it?
