@@ -132,6 +132,3 @@ a reasonable amount of determination to come back to a reasonable typing speed.
 # Conclusion
 Thank you for taking the time to read my article and I hope you were able to get
 something useful out of it. 
-
-
-
