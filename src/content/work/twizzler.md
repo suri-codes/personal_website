@@ -6,7 +6,7 @@ dateEnd: "Present"
 ---
 
 Collaborating with Professor Owen Arden and peers on a novel operating
-system, specifically its security subsystem. Researching
+system, specifically its security subsystem. I'm also researching
 novel ways to incorporate information flow control into OS security
 abstractions in order to provide expressivity and stronger security guarantees.
 I wrote my [bachelors thesis](../../../public/thesis.pdf) on this topic, 
