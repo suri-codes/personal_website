@@ -411,33 +411,426 @@ meaning I have far more control over how precise the LED timings are.
 I have the same setup for the receiver, and the new ESP32 acting as the transmitter for the LED.
 
 Then I performed this massive rewrite of the receiver and transmitter, using a common
-crate to abstract all the morse-code specific code away. Additionally, through lots
+crate to abstract all the morse-code specific logic away. Additionally, through lots
 of trail and error, I made a few system level changes to support the high-speed
 domain we are close to entering.
 
-
-
 ### Start Sequence
+
+After running the system, I ran into a really silly issue. Since I've set the `0` value from the sensor to be `CharBreak`, if there isnt any data
+being transmitted, meaning the light is off, the receiver just picks up a bunch of character breaks. My solution to this is setting up a Start Sequence,
+basically a pattern the receiver listens for, and once it sees it, it starts the parsing logic.
+
+
+```rust
+//NOTE: I found this sequence to work fairly well through experimental testing.
+pub const START_SEQUENCE: [Bit; 10] = [
+    Bit::Hi,
+    Bit::Hi,
+    Bit::Hi,
+    Bit::Hi,
+    Bit::Hi,
+    Bit::Lo,
+    Bit::Lo,
+    Bit::Lo,
+    Bit::Hi,
+    Bit::Hi,
+];
+```
+
+And the receiver logic is implemented as a queue that gets
+pushed with every bit value we see, and then we see if the
+values in the queue match the pattern; if so, we start the
+listening logic.
+
+
+```rust
+let start_queue = self.start_queue.as_mut().unwrap();
+if start_queue.len() == START_SEQUENCE.len() {
+    start_queue.pop_front();
+    start_queue.push_back(bit);
+    let pattern = start_queue.make_contiguous();
+    if pattern == START_SEQUENCE {
+        /// start the listening logic
+        ...
+    }
+} else {
+    start_queue.push_back(bit);
+}
+```
+
+
+This really helps the success rate of message transmissions
+because we are only processing bits that we know to be part
+of a valid message.
 
 ### Timing Calibration
 
+Earlier I talked about using the ADC sample rate as our time
+step, and modulating the LED at that time step, and booom
+everything should be fine right?!
+
+#### No...
+
+In reality the timing of each LED on and OFF is not exact, and usually higher than the delay we specify, especially if our code looks like this
+
+```rust
+for bit in &data_packet {
+    match bit {
+        morse::Bit::Hi => led.set_high(),
+        morse::Bit::Lo => led.set_low(),
+    }
+    delay.delay_micros(morse::TIME_STEP_MICROS as u32);
+}
+```
+
+Theres a bit of overhead, albeit consistent, that makes it so
+the real timestep is ging to be the `real_time_step = TIME_STEP_MICROS + x`
+where `x` is how long that overhead takes to run.
+
+The only way to find that `x` is to take measurements! So I have the following contraption set up.
+```rust
+info!("Calibrating...");
+for _ in 1..1000 {
+    // take a snapshot of the time before the transmission
+    let char_start = Instant::now();
+
+    // transmit the packet
+    for bit in &data_packet {
+        hold_bit_for_time_step(&mut led, bit, &delay);
+    }
+
+    // store the amount of elapsed microseconds from 
+    let elapsed_char_micros = char_start.elapsed().as_micros();
+
+    // number of bits in the data packet
+    let char_bits = data_packet.len();
+
+    // the expected time should just be the number of bits times the set time step
+    let expected_time = char_bits as usize * TIME_STEP_MICROS as usize;
+
+    //  The optimal frequency for this run is the following formula
+    // (number of microseconds in a second) / (((the difference in actual vs ideal transmission times) / (total number of bits sent)) + ideal transmissoin time)
+    //  It looks like a complicated formula but just trust me that
+    //  the result is going to be the ideal receiver frequency
+    //  that takes the `x` delay into account
+    let optimal_receiver_freq = 1e6
+        / (((elapsed_char_micros - expected_time as u64) as f64 / char_bits as f64)
+            + TIME_STEP_MICROS as f64);
+
+
+    // since the optimal frequency depends on the time it takes
+    // for each message to be sent, we would like an averaged
+    // value, so the remaining code is  the running average
+    // formula applied to the optimal receiver frequency
+    transmits += 1;
+    running_avg_recv_freq = running_avg_recv_freq
+        + ((optimal_receiver_freq - running_avg_recv_freq) / transmits as f64);
+}
+info!("optimal recv freq :  {} Hz", running_avg_recv_freq);
+```
+
+Running this calibration code gives us a result that looks like this:
+
+
+``` 
+[INFO] Calibrating... (tx src/bin/main.rs:52)
+[INFO] optimal recv freq :  83315.16620551319 Hz (tx src/bin/main.rs:79)
+```
+Note that the optimal receiver frequency does change just a tiny bit depending on the message length / its morse encoding, even if
+the ideal frequency is the same.
+
+Now all we do is set the receiver to the optimal receiver frequency, and we should get perfect sampling!
+
 ### Serialization Optimization
+
+While the morse serialization pattern I came up with originally was good enough, I felt like I could get even more out of it.
+
+
+I wanted to revisit our original encoding scheme, to see if there was some more performance we could squeeze out. As a reminder, this was our encoding scheme for morse code:
+
+
+- Dot = `10`
+- Dash = `110`
+- Character Break = `0`
+
+But to test how well our encoding performs, we need a test message. Since I didnt feel like doing an arduous amound of testing, I figured a good test would be a string that contains
+all letters of the alphabet, with copies of each letter corresponding to its usuage. It ends up looking like this: 
+
+```
+EEEEEEEEEEEEE
+TTTTTTTTTT
+AAAAAAAAA
+OOOOOOOOO
+IIIIIIII
+NNNNNNN
+SSSSSS
+HHHHHH
+RRRRRR
+DDDDD
+LLLLL
+CCCC
+UUUU
+MMMM
+WWW
+FFF
+GGG
+YYY
+PPP
+BB
+VV
+KK
+JJ
+X
+Q
+Z
+```
+
+and as a message it would be 
+```
+EEEEEEEEEEEEETTTTTTTTTTAAAAAAAAAOOOOOOOOOIIIIIIIINNNNNNNSSSSSSHHHHHHRRRRRRDDDDDDLLLLLCCCCUUUUMMMMWWWFFFGGGYYYPPPBBVVKKJJXQZ
+```
+
+Now we have a decent "average" message for testing encoding schemes.
+
+
+1. The Original
+- Dot = `10`
+- Dash = `110`
+- Character Break = `0`
+
+```
+[INFO ] optimal recv freq :  83273.31652862801 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  11073.100468131077 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  83229.4819298558 (tx src/bin/main.rs:127)
+```
+
+This is the stats for our naive "optimized" serialzation of morse code, and below are the two other "sensible" combinations.
+
+2. Encoding 2
+- Dot = `0`
+- Dash = `10`
+- Character Break = `110`
+
+```
+[INFO ] optimal recv freq :  83267.48320821811 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  12149.348083761359 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  83227.63196409406 (tx src/bin/main.rs:127)
+```
+
+This encoding would work well if, on average, each character has a dash, which is fairly common in morse code. It gives us a ~1000 char/sec boost to our speed, so thats pretty cool!
+
+
+3. Encoding 3
+- Dot = `0`
+- Dash = `110`
+- Character Break = `10`
+
+```
+[INFO ] optimal recv freq :  83268.8588007737 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  11895.551257253384 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  83229.81366459628 (tx src/bin/main.rs:127)
+```
+
+The third encoding is ~200 char/s slower than the second one.
+However, if you have more character breaks than total dashes,
+(hint: foreshadowing) this will give you a higher top speed.
+
+For the following runs I'll either be using encoding 2 or 3.
 
 ### Data Collection
 
+I really wanted a nice way to measure how well our receiver is reading the message. I decided to add some data collection and logging
+that informs me how well the receivers picked up message compares to the message we are sending from the transmitter.
+
+
+```rust
+match parser.message() {
+    Ok(msg) => {
+        // we read succesfully!
+        successful_reads += 1;
+        // this is the message the transmitter is sending
+        let perf_msg = morse::MSG.to_lowercase();
+        if msg == perf_msg {
+            // we read perfectly!
+            perfect_reads += 1;
+        }
+
+        // lets crunch some numbers here
+        let read_rate: f32 = (successful_reads as f32 / attempts as f32) * 100.0;
+        let perfect_rate: f32 = (perfect_reads as f32 / attempts as f32) * 100.0;
+
+        info!("Message          : {msg}");
+        info!("Read accuracy    : {read_rate}%");
+        info!("Perfect accuracy : {perfect_rate}%");
+        info!("Attempts         : {attempts}");
+        println!("\n\n")
+    }
+    Err(e) => {
+        error!("failed to parse message! {e:?}");
+    }
+}
+
+```
+
+## The Final Strech
+
+Okay new system ready to go, now all we have to do is run it.
+
+First lets set our message...
+```rust
+pub const MSG: &str = "suri.codes";
+```
+
+Configure the time step... 
+
+(The reason we set the time step to 11 micros is becase a timestep of 10 would result in our optimal recv frequency being above the rated frequency of the ADC on the ESP32c3)
+```rust
+pub const TIME_STEP_MICROS: u64 = 11;
+```
+
+and begin the optimal frequency calculation on the transmitter...
+```
+[INFO ] Calibrating... (tx src/bin/main.rs:52)
+[INFO ] optimal recv freq :  83254.81240497294 Hz (tx src/bin/main.rs:79)
+[INFO ] Press boot button to start transmitting message! (tx src/bin/main.rs:80)  
+```
+
+Now we set the ADC sampling frequency on the receiver...
+```rust
+const SAMPLE_HERTZ: u64 = 83255;
+```
+
+And now lets have this run for a while...
+
+<INSERT 5 MINUTES WHILE I SNACK>
+
+and viola!
+
+
+Our transmitter logs are looking like
+```
+[INFO ] sending start sequence! (tx src/bin/main.rs:92)
+[INFO ] Message           :  suri.codes (tx src/bin/main.rs:123)
+[INFO ] transmission time :  925 micros (tx src/bin/main.rs:124)
+[INFO ] optimal recv freq :  83280.63678143303 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  10810.81081081081 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  83173.99617590822 (tx src/bin/main.rs:127)
+[INFO ] total msg bits    :  77 (tx src/bin/main.rs:128)
+[INFO ] total bits        :  87 (tx src/bin/main.rs:129)
+```
+
+While the receiver logs look like
+
+```
+I (526366) rx: Message          : suri.codes
+I (526366) rx: Read accuracy    : 97.78262%
+I (526366) rx: Perfect accuracy : 97.52817%
+I (526376) rx: Attempts         : 2751
+```
+
+
+We are transmitting at **10,810 char/s** (per message), with a
+perfect read accuracy of **97.53%!** It's not usable for any real
+data transmission workloads, but for a hobbyist project that
+started off as a lab assignment, thats pretty cool!
 
 
 
+**But can we go faster?**
+
+_Cue the music..._
 
 ## Gas Gas Gas
 
+<iframe width="600" height="400" src="https://www.youtube.com/embed/dzod0j4E-rQ?start=77" title="Manuel - Gas Gas Gas (Eurobeat)" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
-// gas gas gas song
-<!-- https://youtu.be/ljwUlY9WW1I?si=BsMLJXBAmZAogkXE -->
+Alright lets lock in.
+
+The only hard limit we have is the ADC sampling frequency of ~85,000 Hz. Meaning we can only ever send around ~85,000 bits per second.
+
+Seeing from the logs earlier we see that we are already sending...
+
+```
+[INFO ] bits per second   :  83173.99617590822 (tx src/bin/main.rs:127
+```
+
+Meaning we have to cram the maximum amount of characters into bits. Logically this means we should see how many letters in morse code rely on a single dash or dot.
+
+Our two options are: **E**: Dot or **T**: Dash
+
+Rememer that our encoding represents a Dot as a single **0** bit, so I'll be choosing E as our ideal letter.
+
+We can also posit that Encoding 3 is faster for this usecase since there are no dashes, so I modified the code to handle that.
+
+Finally, Lets try it!
+
+```
+[INFO ] Message           :  e (tx src/bin/main.rs:123)
+[INFO ] transmission time :  61 micros (tx src/bin/main.rs:124)
+[INFO ] optimal recv freq :  82001.04240551664 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  16393.44262295082 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  81967.2131147541 (tx src/bin/main.rs:127)
+[INFO ] total msg bits    :  5 (tx src/bin/main.rs:128)
+[INFO ] total bits        :  15 (tx src/bin/main.rs:129)
+```
+Good but it's still not the fastest we can go.
+
+It's because the real message I was sending was `E<MSG_BREAK>` -> `01110`
+
+I needed some way to reduce the price I was paying for the `<MSG_BREAK>`. The easiest solution to this would be
+to send many more characters to reduce the average bytes sent per character.
+
+In the end my final string ends up looking like (you can add more e's if you want) 
+**eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee**
+
+It's not really meaningful information, but it sure does go fast.
+
+```
+[INFO ] Message           :  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee (tx src/bin/main.rs:123)
+[INFO ] transmission time :  2149 micros (tx src/bin/main.rs:124)
+[INFO ] optimal recv freq :  83297.23094204796 Hz (tx src/bin/main.rs:125)
+[INFO ] chars per second  :  27454.63006049325 (tx src/bin/main.rs:126)
+[INFO ] bits per second   :  83296.60643455267 (tx src/bin/main.rs:127)
+[INFO ] total msg bits    :  179 (tx src/bin/main.rs:128)
+[INFO ] total bits        :  189 (tx src/bin/main.rs:129)
+[INFO ]
+```
+
+```
+I (240916) rx: Message          : eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+I (240916) rx: Read accuracy    : 97.3582%
+I (240926) rx: Perfect accuracy : 96.0373%
+I (240926) rx: Attempts         : 1287
+```
+
+
+**27,454 Characters per second, Perfect Accurasy: 96%.**
+
+![we_did_it](./assets/wedidit.jpg)
 
 
 
+## Cheese
 
+
+One way to even faster would just be to encode the `MSG_BREAK`
+as `1`, so when you send an `e`, it gets received as `01`, and
+then youre only transmitting 2 bits for the entire message.
+Our bit speed is ~83,000 bits per second, so you could
+theoretically send ~41,500 characters per second, but when you
+do that, it would be impossible to encode a Dash without
+ambiguity, so you wouldn't be able to transmit any other
+message. For that reason, I don't count this.
+
+
+
+# Fin
+
+If you made it this far, thank you for following me on this
+journey! The code for this endeavor can be found
+[here](https://github.com/suri-codes/Gas) if you're interested.
+If you have any questions feel free to reach out!
 
 
 
