@@ -40,23 +40,21 @@ Lets define some things that we need to understand first before we get into the 
   ![ESP32c3 Rust Dev Board](https://cdn-shop.adafruit.com/970x728/5787-00.jpg)
       <center>**ESP32c3 Board**</center>
 
-  The ESP32 is a computer the length of an adult finger, and its honestly suprising
-  the amount of things you can do with this thing. It has bluetooth and Wifi capability,
-  so you can talk to pretty much any device around you, as well as a bunch of different
-  peripherals, which allow you to do all sorts of things with it. We are going to be using
-  this as our receiver device.
+  The ESP32 is a computer the length of an adult finger, and
+  its honestly suprising how feature-rich it is.
+  It has bluetooth and Wifi capability, so you can
+  talk to pretty much any device around you, as well as a bunch
+  of different peripherals. We are going to be using this as our
+  receiver device.
     
 3. GPIO - General Purpose Input Output
 
   GPIO pins are litte metal pins that stick out of both
-  boards, and act as, well its kind of in the name, General
+  boards and act as, well its kind of in the name, General
   Purpose Input / Output, for the board.  They can take in
   electrical signals, and expose them to the software we can
   write on the board!
 
-  They are cool because they provide your code with a way of
-  interacting with the physical world, depending on what you
-  hook them up to.
 
   ![GPIO](https://cdn.sparkfun.com/assets/learn_tutorials/1/5/9/5/GPIO.png)
       <center>**GPIO pins on a Raspberry Pi**</center>
@@ -68,7 +66,7 @@ Lets define some things that we need to understand first before we get into the 
   through when they are hit with light! They have this
   property due to a special kind of semiconductor, whose
   conductivity dependson the amount of light hitting it.
-  Basically they are light sensors!
+  Basically they are light sensors.
 
 
 5. ADC - Analog to Digital Converter
@@ -76,7 +74,7 @@ Lets define some things that we need to understand first before we get into the 
   ![ADC](https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTQ5nMe4TD3fJrmOjl0bHRXgIEqVDuP4NUitA&s)
       <center>**ADC in Action!**</center>
 
-  To understand what an ADC is, we need to first understand what an analog signal is!
+  To understand what an ADC is, we need to first understand what an analog signal is.
   To put it simply, an analog signal is any "value" (of some physical thing) that vary's over time.
   For example if you had a microphone that measures how loud a room is, its outputting an analog signal because
   the decibels in the room are varying over time! In computer land, analog signals usually refer to some
@@ -220,8 +218,8 @@ const MORSE_TABLE: [&[MorseBit]; 128] = {
 }
 ```
 
-the `b'a'` syntax returns the binary value of the character `a`, and then we set
-that index in the array to be equal to the sequence `.-`.
+the **b'a'** syntax returns the binary value of the character **a**, and then we set
+that index in the array to be equal to the sequence **.-**.
 
 This allows us an easy way to turn any ascii character into its morse code representation
 
@@ -302,16 +300,12 @@ After converting them into dots and dashes we do the following
 
 3. If a letter exists for that sequence we print it out.
 
-
-
-//TODO: maybe some pictures / video when im in lab on wednesday
-
 Awesome, we can now transmit information using morse code!
 
-// insert speed measurement
+*Drum Roll.....*
+![speed](./assets/3:s.png)
 
-
-Thats it right?
+Well that was underwhelmning.
 
 ## Dissapointment
 
@@ -555,7 +549,7 @@ I wanted to revisit our original encoding scheme, to see if there was some more 
 - Character Break = `0`
 
 But to test how well our encoding performs, we need a test message. Since I didnt feel like doing an arduous amound of testing, I figured a good test would be a string that contains
-all letters of the alphabet, with copies of each letter corresponding to its usuage. It ends up looking like this: 
+all letters of the alphabet, with multiples of each letter corresponding to its usage in the english language. It ends up looking like this: 
 
 ```
 EEEEEEEEEEEEE
@@ -761,7 +755,7 @@ Our two options are: **E**: Dot or **T**: Dash
 
 Rememer that our encoding represents a Dot as a single **0** bit, so I'll be choosing E as our ideal letter.
 
-We can also posit that Encoding 3 is faster for this usecase since there are no dashes, so I modified the code to handle that.
+Also we can posit that Encoding 3 is faster for this usecase since there are no dashes.
 
 Finally, Lets try it!
 
@@ -779,7 +773,7 @@ Good but it's still not the fastest we can go.
 It's because the real message I was sending was `E<MSG_BREAK>` -> `01110`
 
 I needed some way to reduce the price I was paying for the `<MSG_BREAK>`. The easiest solution to this would be
-to send many more characters to reduce the average bytes sent per character.
+to send many more characters per message to amortize the cost of the single `<MSG_BREAK>` sequence at the end.
 
 In the end my final string ends up looking like (you can add more e's if you want) 
 **eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee**
